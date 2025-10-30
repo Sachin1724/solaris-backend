@@ -1,3 +1,4 @@
+// server.js
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -5,8 +6,11 @@ const { WebSocketServer } = require("ws");
 const connectDB = require("./config/db");
 const SolarData = require("./models/SolarData");
 
+// Import new data route
+const dataRoutes = require("./routes/dataRoutes");
+
 const app = express();
-app.use(cors());
+app.use(cors()); // Enable CORS for all routes
 app.use(express.json());
 
 const PORT = process.env.PORT || 4000;
@@ -14,12 +18,16 @@ const PORT = process.env.PORT || 4000;
 // Connect MongoDB
 connectDB();
 
+// --- NEW: Use API Routes ---
+// This will make your data available at http://.../api/data
+app.use("/api/data", dataRoutes);
+
 // HTTP server
 const server = app.listen(PORT, () =>
   console.log(`🌞 Solaris backend running on port ${PORT}`)
 );
 
-// WebSocket server
+// --- WebSocket server (No changes) ---
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
@@ -53,4 +61,5 @@ wss.on("connection", (ws) => {
   ws.on("close", () => console.log("🔴 ESP32 Disconnected"));
 });
 
+// Root route
 app.get("/", (req, res) => res.send("Solaris WebSocket Server is Live"));
