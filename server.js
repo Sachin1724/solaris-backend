@@ -3,7 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { WebSocketServer } = require("ws");
-const { Server } = require("socket.io"); // --- ADDED ---
+const { Server } = require("socket.io");
 const connectDB = require("./config/db");
 const SolarData = require("./models/SolarData");
 const dataRoutes = require("./routes/dataRoutes");
@@ -25,7 +25,7 @@ const server = app.listen(PORT, () => {
   console.log(`🌞 Solaris backend running on port ${PORT}`);
 });
 
-// --- ADDED: Socket.io server for Dashboard Clients ---
+// --- Socket.io server for Dashboard Clients ---
 const io = new Server(server, {
   cors: {
     origin: "*", // For development. In production, change to your frontend URL
@@ -39,13 +39,22 @@ io.on("connection", (socket) => {
     console.log("🔌 Dashboard Client Disconnected:", socket.id);
   });
 });
-// --- END: Socket.io server ---
 
 // --- EXISTING: WebSocket server for ESP32 ---
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
   console.log("🟢 ESP32 Connected via WebSocket");
+
+  // --- ADDED: Error handler for the ESP32 connection ---
+  // This will catch errors from this specific ESP32 connection
+  // and prevent the entire server from crashing.
+  ws.on("error", (err) => {
+    console.error("❌ ESP32 WebSocket Error:", err.message);
+    // No need to throw; just log it. The 'close' event will
+    // likely be triggered automatically after this.
+  });
+  // --- END OF FIX ---
 
   ws.on("message", async (msg) => {
     try {
@@ -68,7 +77,7 @@ wss.on("connection", (ws) => {
       await entry.save();
       console.log("✅ Data saved to MongoDB");
       
-      // --- ADDED: Broadcast the new entry to all dashboard clients ---
+      // Broadcast the new entry to all dashboard clients
       io.emit("newData", entry);
       
       ws.send("✅ Data received & stored");
