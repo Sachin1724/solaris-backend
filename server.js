@@ -5,12 +5,10 @@ const cors = require("cors");
 const { WebSocketServer } = require("ws");
 const connectDB = require("./config/db");
 const SolarData = require("./models/SolarData");
-
-// Import new data route
 const dataRoutes = require("./routes/dataRoutes");
 
 const app = express();
-app.use(cors()); // Enable CORS for all routes
+app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 4000;
@@ -18,16 +16,15 @@ const PORT = process.env.PORT || 4000;
 // Connect MongoDB
 connectDB();
 
-// --- NEW: Use API Routes ---
-// This will make your data available at http://.../api/data
+// API Routes
 app.use("/api/data", dataRoutes);
 
-// HTTP server
-const server = app.listen(PORT, () =>
-  console.log(`🌞 Solaris backend running on port ${PORT}`)
-);
+// Create HTTP server
+const server = app.listen(PORT, () => {
+  console.log(`🌞 Solaris backend running on port ${PORT}`);
+});
 
-// --- WebSocket server (No changes) ---
+// WebSocket server
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
@@ -36,25 +33,28 @@ wss.on("connection", (ws) => {
   ws.on("message", async (msg) => {
     try {
       const data = JSON.parse(msg.toString());
-      console.log("📥 Received:", data);
+      console.log("📥 Received from ESP32:", data);
 
-      // Save to MongoDB
+      // Match field names to your ESP32 output
       const entry = new SolarData({
         temperature: data.t,
         humidity: data.h,
-        dustVoltage: data.dV,
-        dustDensity: data.d,
-        ldrLeft: data.lL,
-        ldrRight: data.lR,
+        dustVoltage: data.dustV,
+        dust: data.dust,
+        ldr: data.ldr,
+        ldrPercent: data.ldrPct,
         voltage: data.v,
         current: data.i,
         power: data.p,
       });
+
       await entry.save();
+      console.log("✅ Data saved to MongoDB");
 
       ws.send("✅ Data received & stored");
     } catch (err) {
-      console.error("❌ Error:", err.message);
+      console.error("❌ Error parsing/saving data:", err.message);
+      ws.send("❌ Invalid data format");
     }
   });
 
@@ -62,4 +62,4 @@ wss.on("connection", (ws) => {
 });
 
 // Root route
-app.get("/", (req, res) => res.send("Solaris WebSocket Server is Live"));
+app.get("/", (req, res) => res.send("☀️ Solaris WebSocket Server Live"));
