@@ -31,7 +31,7 @@ exports.getEfficiencyData = async (req, res) => {
     const agg = await SolarData.aggregate([
       {
         $match: {
-          timestamp: { $gte: start, $lte: end },
+          createdAt: { $gte: start, $lte: end }, // <-- FIXED
           ldrPercent: { $lt: 90 } // Only include daylight hours
         }
       },
@@ -68,7 +68,7 @@ exports.getEfficiencyData = async (req, res) => {
 // GET /api/data/devicereport
 exports.getDeviceReport = async (req, res) => {
   try {
-    const lastEntry = await SolarData.findOne().sort({ timestamp: -1 });
+    const lastEntry = await SolarData.findOne().sort({ createdAt: -1 }); // <-- FIXED
 
     if (!lastEntry) {
       return res.status(404).json({ msg: "No data received from device yet." });
@@ -76,7 +76,7 @@ exports.getDeviceReport = async (req, res) => {
     
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const avgStatsArr = await SolarData.aggregate([
-        { $match: { timestamp: { $gte: yesterday } } },
+        { $match: { createdAt: { $gte: yesterday } } }, // <-- FIXED
         {
           $group: {
             _id: null,
@@ -88,26 +88,23 @@ exports.getDeviceReport = async (req, res) => {
         }
     ]);
     
-    // --- FIX: Ensure avgStats is an object, even if no data exists ---
     const avgStats = avgStatsArr.length > 0 ? avgStatsArr[0] : null;
 
     const report = {
       deviceId: "ESP32-Solaris-01",
-      lastSeen: lastEntry.timestamp,
+      lastSeen: lastEntry.createdAt, // <-- FIXED
       liveStatus: {
-        // --- FIX: Provide default 0 if value is null/undefined ---
         power: lastEntry.power ?? 0,
         temperature: lastEntry.temperature ?? 0,
         dustDensity: lastEntry.dustDensity ?? 0
       },
       average_24h: avgStats ? {
-        // --- FIX: Provide default 0 if value is null/undefined ---
         _id: null,
         avgPower: avgStats.avgPower ?? 0,
         avgTemp: avgStats.avgTemp ?? 0,
         avgHumidity: avgStats.avgHumidity ?? 0,
         avgDust: avgStats.avgDust ?? 0
-      } : null // Keep average_24h null if no data
+      } : null
     };
 
     res.json(report);
@@ -122,14 +119,13 @@ exports.getDeviceReport = async (req, res) => {
 // GET /api/data/dust
 exports.getLatestDustReading = async (req, res) => {
   try {
-    const lastEntry = await SolarData.findOne().sort({ timestamp: -1 });
+    const lastEntry = await SolarData.findOne().sort({ createdAt: -1 }); // <-- FIXED
     
     if (!lastEntry) {
       return res.status(404).json({ msg: "No data found." });
     }
 
     const MAX_DUST_DENSITY = 200; 
-    // --- FIX: Provide default 0 if value is null/undefined ---
     const dustDensity = lastEntry.dustDensity ?? 0;
     const dustPercentage = Math.min((dustDensity / MAX_DUST_DENSITY) * 100, 100); 
 
@@ -149,8 +145,9 @@ exports.getLatestDustReading = async (req, res) => {
 // GET /api/data (Your original route)
 exports.getAllData = async (req, res) => {
   try {
-    const data = await SolarData.find().sort({ timestamp: -1 }).limit(100);
-    res.json(data);
+    // --- THIS IS THE MOST IMPORTANT FIX ---
+    const data = await SolarData.find().sort({ createdAt: -1 }).limit(100); // <-- FIXED
+    res.json({ data: data }); // <-- Make sure to send data in an object { data: ... }
   } catch (err) {
     console.error(err.message);
     res.status(500).send("Server Error");
