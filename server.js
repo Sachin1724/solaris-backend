@@ -8,7 +8,7 @@ const connectDB = require("./config/db");
 const SolarData = require("./models/SolarData");
 const dataRoutes = require("./routes/dataRoutes");
 
-// --- NEW: Import TensorFlow.js and File System ---
+// --- Import TensorFlow.js and File System ---
 const tf = require("@tensorflow/tfjs-node");
 const fs = require("fs");
 
@@ -24,142 +24,150 @@ connectDB();
 // API Routes
 app.use("/api/data", dataRoutes);
 
-// --- NEW: Global variables for ML Model and Scaler ---
+// --- Global variables for ML Model and Scaler ---
 let model;
 let scalerParams;
-const FEATURES_COUNT = 4; // Temp, Humidity, Brightness, HourOfDay
+// This MUST match the features used in your Python training script
+const FEATURES_COUNT = 4; // temperature, humidity, dust, ldrPercent
 
-// --- NEW: Define Alert Thresholds (Tune these) ---
-const DUST_THRESHOLD = 3.0; // From your 'dust' sensor reading
-const EFFICIENCY_LOSS_THRESHOLD_MW = 15; // Alert if loss is > 15mW
-const EFFICIENCY_LOSS_THRESHOLD_PERCENT = 0.30; // Alert if loss is > 30%
+// --- Define Alert Thresholds (Tune these) ---
+const DUST_THRESHOLD = 3.0; // From your 'dust' sensor reading (e.g., 3.0 mg/m^3)
 const LOW_POWER_THRESHOLD = 10; // Alert if daytime power is < 10mW
+const DAYLIGHT_THRESHOLD = 30; // 'ldrPercent' value to consider it "daytime"
+const PREDICTED_DROP_THRESHOLD = 5.0; // Alert if model predicts > 5% efficiency loss
 
-// --- NEW: Function to load the model and scaler params ---
+// --- Function to load the model and scaler params ---
 async function loadModelAndScaler() {
   try {
+    // 1. Load Scaler Parameters
     const paramsData = fs.readFileSync("scaler_params.json", "utf8");
     scalerParams = JSON.parse(paramsData);
     console.log("✅ Scaler parameters loaded.");
 
-    model = await tf.loadLayersModel("file://./solar_power_model.h5");
-    console.log("🤖 ML Model loaded successfully.");
-    // Warm up the model
-    model.predict(tf.zeros([1, FEATURES_COUNT]));
-    console.log("🤖 ML Model warmed up.");
+    // 2. Load the TensorFlow.js Model
+    // Note: 'file://' is required for tfjs-node to load from disk
+    const modelPath = "file://tf_model/model.json";
+    model = await tf.loadLayersModel(modelPath);
+    console.log("✅ ML Model loaded from 'tf_model/'.");
+    // model.summary(); // Uncomment to see model architecture
   } catch (err) {
     console.error("❌ Error loading model or scaler:", err.message);
+    console.error(
+      "Please make sure 'scaler_params.json' and the 'tf_model' directory are in the same folder as server.js."
+    );
   }
 }
 
-// --- NEW: Function to run prediction and send alerts ---
+// --- Helper Function to Send Alerts ---
+function sendAlert(type, message, data) {
+  console.warn(`🚨 ALERT: [${type}] - ${message}`, data || "");
+  // Emit to your dashboard
+  io.emit("alert", {
+    type,
+    message,
+    data,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+// --- Function to Run Prediction and Alerts ---
 async function runPredictionAndAlert(entry) {
+  // --- 1. Check for simple, direct alerts ---
+
+  // Alert 1: Dust Alert
+  if (entry.dust > DUST_THRESHOLD) {
+    sendAlert(
+      "DUST",
+      `Dust level is high (${entry.dust.toFixed(
+        2
+      )}). Panel cleaning recommended.`,
+      { dust: entry.dust }
+    );
+  }
+
+  // Alert 2: Low Power Alert
+  if (entry.power < LOW_POWER_THRESHOLD && entry.ldrPercent > DAYLIGHT_THRESHOLD) {
+    sendAlert(
+      "LOW_POWER",
+      `Power output is ${entry.power.toFixed(
+        2
+      )}mW, which is low for daylight conditions.`,
+      { power: entry.power, ldrPercent: entry.ldrPercent }
+    );
+  }
+
+  // --- 2. Run ML Model for Performance Alert ---
   if (!model || !scalerParams) {
-    console.log("Model not ready, skipping prediction.");
+    console.log("Model/scaler not loaded, skipping ML prediction.");
     return;
   }
 
   try {
-    // --- Alert 1: Dust (Rule-Based) ---
-    // This uses the 'dust' field from your ESP32
-    if (entry.dust && entry.dust > DUST_THRESHOLD) {
-      io.emit("alert", {
-        type: "dust",
-        message: `High dust detected (${entry.dust}). Cleaning recommended.`,
-      });
-    }
-
-    // --- ML-Based Alerts (Efficiency & Low Power) ---
-    const isDaytime = entry.ldrPercent < 90;
-
-    if (!isDaytime) {
-      return; // Don't check efficiency at night
-    }
-
-    // --- 1. Get Features (as requested) ---
-    const hourOfDay = new Date().getHours(); // Get current hour
-    const inputData = [
+    // A. Prepare features in the *exact* order from training:
+    // [temperature, humidity, dust_accumulation, sunlight_hours]
+    const features = [
       entry.temperature,
       entry.humidity,
-      entry.ldrPercent, // This is 'Brightness (%)'
-      hourOfDay,
+      entry.dust,
+      entry.ldrPercent, // Using ldrPercent as proxy for sunlight_hours
     ];
 
-    // --- 2. Scale Features ---
-    const scaledInput = inputData.map((val, i) => {
-      // (value - min) * scale
-      // Note: scale = 1 / (max - min)
-      return (val - scalerParams.X_min[i]) * scalerParams.X_scale[i];
+    // B. Manually scale the features
+    const scaledFeatures = features.map((val, i) => {
+      return (val - scalerParams.mean[i]) / scalerParams.scale[i];
     });
 
-    const inputTensor = tf.tensor2d([scaledInput], [1, FEATURES_COUNT]);
+    // C. Create a TensorFlow tensor
+    const inputTensor = tf.tensor2d([scaledFeatures], [1, FEATURES_COUNT]);
 
-    // --- 3. Run Prediction ---
+    // D. Run the prediction
     const predictionTensor = model.predict(inputTensor);
-    const scaledPrediction = (await predictionTensor.data())[0];
+    const predictedDrop = (await predictionTensor.data())[0];
 
-    // --- 4. Un-scale Prediction to get Predicted_Power (mW) ---
-    // (scaled_value / scale) + min
-    const predictedPower = (scaledPrediction / scalerParams.y_scale[0]) + scalerParams.y_min[0];
-
-    // Clean up tensors
+    // E. Clean up tensors
     inputTensor.dispose();
     predictionTensor.dispose();
 
-    // --- 5. Calculate Efficiency Loss (As you requested) ---
-    const actualPower = entry.power; // This is now (V * I)
-    const efficiencyLoss = predictedPower - actualPower;
+    console.log(
+      `🤖 ML Prediction: Predicted Efficiency Drop = ${predictedDrop.toFixed(2)}%`
+    );
 
-    console.log(`Prediction: Actual(${actualPower.toFixed(2)}mW) vs. Predicted(${predictedPower.toFixed(2)}mW). Loss: ${efficiencyLoss.toFixed(2)}mW`);
-
-    // --- Alert 2: Efficiency ---
-    if (efficiencyLoss > EFFICIENCY_LOSS_THRESHOLD_MW && (efficiencyLoss / predictedPower) > EFFICIENCY_LOSS_THRESHOLD_PERCENT) {
-      io.emit("alert", {
-        type: "efficiency",
-        message: `Efficiency low. Power is ${efficiencyLoss.toFixed(1)}mW lower than expected.`,
-        details: {
-          predicted: predictedPower.toFixed(2),
-          actual: actualPower.toFixed(2),
-        },
-      });
+    // Alert 3: ML Performance Alert
+    if (predictedDrop > PREDICTED_DROP_THRESHOLD) {
+      sendAlert(
+        "PERFORMANCE",
+        `High efficiency drop predicted (${predictedDrop.toFixed(
+          2
+        )}%). Check panel health.`,
+        { predictedDrop, ...entry.toObject() }
+      );
     }
-    
-    // --- Alert 3: Low Power (Safety Net) ---
-    else if (actualPower < LOW_POWER_THRESHOLD) {
-      io.emit("alert", {
-        type: "low_power",
-        message: `Critically low power (${actualPower.toFixed(2)} mW) detected during the day.`,
-      });
-    }
-
   } catch (err) {
-    console.error("❌ Error during prediction:", err.message);
+    console.error("❌ Error during model prediction:", err.message);
   }
 }
 
-// Create HTTP server
-const server = app.listen(PORT, async () => {
-  console.log(`🌞 Solaris backend running on port ${PORT}`);
-  // --- NEW: Load the model on server start ---
-  await loadModelAndScaler();
+// --- Start HTTP Server ---
+const server = app.listen(PORT, () => {
+  console.log(`🚀 HTTP Server running on http://localhost:${PORT}`);
 });
 
-// --- Socket.io server for Dashboard Clients ---
+// --- Setup Socket.IO for Dashboard ---
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: "http://localhost:3000", // Allow your React (or other) frontend
     methods: ["GET", "POST"],
   },
 });
 
 io.on("connection", (socket) => {
-  console.log("💻 Dashboard Client Connected via Socket.io:", socket.id);
+  console.log("🟢 Dashboard Client Connected via Socket.IO");
   socket.on("disconnect", () => {
-    console.log("🔌 Dashboard Client Disconnected:", socket.id);
+    console.log("⚪ Dashboard Client Disconnected");
   });
 });
 
-// --- WebSocket server for ESP32 ---
+// --- Setup WebSocket Server for ESP32 ---
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
@@ -174,7 +182,7 @@ wss.on("connection", (ws) => {
       const data = JSON.parse(msg.toString());
       console.log("📥 Received from ESP32:", data);
 
-      // --- MODIFIED: Calculate Actual_Power as requested ---
+      // --- Calculate Actual_Power ---
       const actualPower = data.v * data.i;
 
       // Match field names to your ESP32 output
@@ -187,7 +195,7 @@ wss.on("connection", (ws) => {
         ldrPercent: data.ldrPct,
         voltage: data.v,
         current: data.i,
-        power: actualPower, // --- MODIFIED: Save the calculated power
+        power: actualPower,
       });
 
       await entry.save();
@@ -196,7 +204,7 @@ wss.on("connection", (ws) => {
       // Broadcast the new entry to all dashboard clients
       io.emit("newData", entry);
 
-      // --- NEW: Run the prediction and alert logic ---
+      // --- Run the prediction and alert logic ---
       runPredictionAndAlert(entry);
 
       ws.send("✅ Data received & stored");
@@ -206,9 +214,10 @@ wss.on("connection", (ws) => {
     }
   });
 
-  ws.on("close", () => console.log("🔴 ESP32 Disconnected"));
+  ws.on("close", () => {
+    console.log("⚪ ESP32 Disconnected");
+  });
 });
-// --- END: WebSocket server ---
 
-// Root route
-app.get("/", (req, res) => res.send("☀️ Solaris WebSocket Server Live"));
+// --- Load the model on server startup ---
+loadModelAndScaler();
