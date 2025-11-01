@@ -18,7 +18,7 @@ const getAggDateRange = (period) => {
   return { start, end };
 };
 
-// GET /api/data/efficiency/:period (e.g., :period = "daily", "weekly", "monthly")
+// GET /api/data/efficiency/:period
 exports.getEfficiencyData = async (req, res) => {
   const { period } = req.params;
   if (!["daily", "weekly", "monthly"].includes(period)) {
@@ -28,7 +28,6 @@ exports.getEfficiencyData = async (req, res) => {
   const { start, end } = getAggDateRange(period);
 
   try {
-    // MongoDB Aggregation Pipeline
     const agg = await SolarData.aggregate([
       {
         $match: {
@@ -38,9 +37,9 @@ exports.getEfficiencyData = async (req, res) => {
       },
       {
         $group: {
-          _id: null, // Group all matched documents together
+          _id: null,
           avgPower: { $avg: "$power" },
-          totalPower: { $sum: "$power" }, // Note: This isn't "total energy (Wh)" yet
+          totalPower: { $sum: "$power" }, 
           avgTemp: { $avg: "$temperature" },
           avgDust: { $avg: "$dustDensity" },
           count: { $sum: 1 }
@@ -69,16 +68,14 @@ exports.getEfficiencyData = async (req, res) => {
 // GET /api/data/devicereport
 exports.getDeviceReport = async (req, res) => {
   try {
-    // 1. Get the very last entry for "live" status
     const lastEntry = await SolarData.findOne().sort({ timestamp: -1 });
 
     if (!lastEntry) {
       return res.status(404).json({ msg: "No data received from device yet." });
     }
     
-    // 2. Get 24-hour average stats
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const avgStats = await SolarData.aggregate([
+    const avgStatsArr = await SolarData.aggregate([
         { $match: { timestamp: { $gte: yesterday } } },
         {
           $group: {
@@ -90,16 +87,27 @@ exports.getDeviceReport = async (req, res) => {
           }
         }
     ]);
+    
+    // --- FIX: Ensure avgStats is an object, even if no data exists ---
+    const avgStats = avgStatsArr.length > 0 ? avgStatsArr[0] : null;
 
     const report = {
-      deviceId: "ESP32-Solaris-01", // You can make this dynamic if you add a device ID to your model
+      deviceId: "ESP32-Solaris-01",
       lastSeen: lastEntry.timestamp,
       liveStatus: {
-        power: lastEntry.power,
-        temperature: lastEntry.temperature,
-        dustDensity: lastEntry.dustDensity
+        // --- FIX: Provide default 0 if value is null/undefined ---
+        power: lastEntry.power ?? 0,
+        temperature: lastEntry.temperature ?? 0,
+        dustDensity: lastEntry.dustDensity ?? 0
       },
-      average_24h: avgStats.length > 0 ? avgStats[0] : null
+      average_24h: avgStats ? {
+        // --- FIX: Provide default 0 if value is null/undefined ---
+        _id: null,
+        avgPower: avgStats.avgPower ?? 0,
+        avgTemp: avgStats.avgTemp ?? 0,
+        avgHumidity: avgStats.avgHumidity ?? 0,
+        avgDust: avgStats.avgDust ?? 0
+      } : null // Keep average_24h null if no data
     };
 
     res.json(report);
@@ -120,16 +128,14 @@ exports.getLatestDustReading = async (req, res) => {
       return res.status(404).json({ msg: "No data found." });
     }
 
-    // You asked for "percentage". Your sensor provides "density".
-    // To get a percentage, you need to define the "max" density.
-    // Example: Let's assume 0 is clean and 200 is 100% dirty.
-    const MAX_DUST_DENSITY = 200; // --- ADJUST THIS VALUE ---
-    const dustDensity = lastEntry.dustDensity;
-    const dustPercentage = Math.min((dustDensity / MAX_DUST_DENSITY) * 100, 100); // Cap at 100%
+    const MAX_DUST_DENSITY = 200; 
+    // --- FIX: Provide default 0 if value is null/undefined ---
+    const dustDensity = lastEntry.dustDensity ?? 0;
+    const dustPercentage = Math.min((dustDensity / MAX_DUST_DENSITY) * 100, 100); 
 
     res.json({
       dustDensity: dustDensity,
-      dustPercentage: dustPercentage.toFixed(2), // e.g., "45.50"
+      dustPercentage: dustPercentage.toFixed(2),
       maxDensityForCalc: MAX_DUST_DENSITY
     });
 
@@ -140,10 +146,9 @@ exports.getLatestDustReading = async (req, res) => {
 };
 
 
-// GET /api/data (Your original route to get all data)
+// GET /api/data (Your original route)
 exports.getAllData = async (req, res) => {
   try {
-    // Get last 100 entries, sorted by newest first
     const data = await SolarData.find().sort({ timestamp: -1 }).limit(100);
     res.json(data);
   } catch (err) {
