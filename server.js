@@ -27,7 +27,7 @@ const server = app.listen(PORT, () =>
   console.log(`🌞 Solaris backend running on port ${PORT}`)
 );
 
-// --- WebSocket server (No changes) ---
+// --- WebSocket server (UPDATED) ---
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
@@ -38,18 +38,22 @@ wss.on("connection", (ws) => {
       const data = JSON.parse(msg.toString());
       console.log("📥 Received:", data);
 
+      // --- UPDATED MAPPING ---
       // Save to MongoDB
       const entry = new SolarData({
         temperature: data.t,
         humidity: data.h,
-        dustVoltage: data.dV,
-        dustDensity: data.d,
-        ldrLeft: data.lL,
-        ldrRight: data.lR,
+        dustVoltage: data.dustV,  // Changed from data.dV
+        dustDensity: data.dust,   // Changed from data.d
+        ldrRaw: data.ldr,         // Changed from data.lL
+        ldrPercent: data.ldrPct,  // Changed from data.lR
         voltage: data.v,
         current: data.i,
         power: data.p,
+        tiltAngle: data.tilt,     // NEW field
       });
+      // --- END UPDATED MAPPING ---
+
       await entry.save();
 
       ws.send("✅ Data received & stored");
