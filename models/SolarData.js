@@ -7,11 +7,12 @@ const SolarDataSchema = new mongoose.Schema(
     humidity: Number,
     dustVoltage: Number,
     dustDensity: Number,
-    ldrLeft: Number,    // Reverted
-    ldrRight: Number,   // Reverted
+    ldrRaw: Number,       // Replaces ldrLeft
+    ldrPercent: Number,   // Replaces ldrRight
     voltage: Number,
     current: Number,
     power: Number,
+    tiltAngle: Number,    // NEW field (for signed angle)
   },
   { timestamps: true }
 );
