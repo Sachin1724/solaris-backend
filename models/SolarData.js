@@ -7,8 +7,8 @@ const SolarDataSchema = new mongoose.Schema(
     humidity: Number,
     dustVoltage: Number,
     dustDensity: Number,
-    ldrLeft: Number,
-    ldrRight: Number,
+    ldrRaw: Number,       // Replaced ldrLeft
+    ldrPercent: Number,   // Replaced ldrRight
     voltage: Number,
     current: Number,
     power: Number,
