@@ -48,3 +48,20 @@ exports.getAllData = async (req, res) => {
     res.status(500).json({ success: false, error: "Server Error" });
   }
 };
+
+// @desc    Get most recent solar data entries (limit)
+// @route   GET /api/data/latest?limit=100
+// @access  Public
+exports.getLatestData = async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 100;
+    // fetch newest first then reverse so frontend gets chronological order
+    let data = await SolarData.find({}).sort({ createdAt: -1 }).limit(limit);
+    data = data.reverse();
+
+    res.status(200).json({ success: true, count: data.length, data });
+  } catch (err) {
+    console.error("❌ Error fetching latest data:", err && err.message ? err.message : err);
+    res.status(500).json({ success: false, error: "Server Error" });
+  }
+};
